@@ -29,6 +29,7 @@ type OutboxMsgStruct struct {
 	Timestamp  string
 	Cmd        string
 	Message    string
+	SessionID  string
 }
 
 type SearchStruct struct {
@@ -44,23 +45,26 @@ type ClientStruct struct {
 	SearchData       SearchStruct
 	DownloadUser     string
 	DownloadFile     string
+	SessID           string
 }
 
 var clientSearch, keysentence string
 var tpl *template.Template
 
 var SearchData SearchStruct
-var ClientData ClientStruct
 
-var ReceivedEcho = make(chan string, 1)
-var SearchDone = make(chan string, 1)
+// var ClientData ClientStruct
+
+var ReceivedEcho = make(chan OutboxMsgStruct, 1)
+var SearchDone = make(chan OutboxMsgStruct, 1)
 
 var clientName, logFile, verboseLevel, inboxURL, outboxURL string
 var stdoutEnabled, fileoutEnabled bool
 var cfgFile string = "config/config.toml"
 var command int
 var seededRand *rand.Rand = rand.New(rand.NewSource(time.Now().UnixNano()))
-var sessID string
+
+// var sessID string
 var sess *session.Session = session.Must(session.NewSessionWithOptions(session.Options{
 	SharedConfigState: session.SharedConfigEnable,
 }))
@@ -70,11 +74,10 @@ func main() {
 	initConfig()
 	/////////// MQTT INIT ////////////
 	mqttHelper.OpenMQTT(onConnect, onDisconnect)
-	sessID = StringWithCharset(6)
 
 	tpl = template.Must(template.ParseGlob("templates/*.gohtml"))
 
-	http.HandleFunc("/", menu)
+	http.HandleFunc("/", root)
 	http.HandleFunc("/menu", menu)
 	http.HandleFunc("/echo", echo)
 	http.HandleFunc("/search", search)
@@ -83,14 +86,37 @@ func main() {
 	http.ListenAndServe(":8080", nil)
 }
 
-func menu(w http.ResponseWriter, r *http.Request) {
+func root(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "text/html")
-	ClientData = *new(ClientStruct)
+	ClientData := *new(ClientStruct)
+	ClientData.SessID = StringWithCharset(6)
 
 	if r.Method == http.MethodPost {
 		ClientData.Client = r.FormValue("client")
-		ClientData.Cmd, _ = strconv.Atoi(r.FormValue("cmd"))
+		log.Infof("Subscribing to topics")
 		SubscribeAll(ClientData.Client)
+		err := tpl.ExecuteTemplate(w, "menu.gohtml", ClientData)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	} else {
+		err := tpl.ExecuteTemplate(w, "root.gohtml", ClientData)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+		}
+	}
+
+}
+
+func menu(w http.ResponseWriter, r *http.Request) {
+	w.Header().Set("Content-Type", "text/html")
+	ClientData := ClientStruct{
+		Client: r.FormValue("client"),
+		SessID: r.FormValue("sessid"),
+	}
+
+	if r.Method == http.MethodPost {
+		ClientData.Cmd, _ = strconv.Atoi(r.FormValue("cmd"))
 		if ClientData.Cmd == 1 { //ECHO
 			err := tpl.ExecuteTemplate(w, "echo.gohtml", ClientData)
 			if err != nil {
@@ -110,7 +136,7 @@ func menu(w http.ResponseWriter, r *http.Request) {
 
 		}
 	} else {
-		err := tpl.ExecuteTemplate(w, "menu.gohtml", nil)
+		err := tpl.ExecuteTemplate(w, "menu.gohtml", ClientData)
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 		}
@@ -122,7 +148,6 @@ func onDisconnect() {
 }
 
 func onConnect() {
-	log.Infof("Subscribing to topics")
 }
 
 // SUBSCRIBE TO MQTT TOPICS
@@ -146,7 +171,7 @@ func onEcho(topic string, payload []byte) {
 	if err != nil {
 		log.Errorf("Error parsing RX msg JSON from %s: %v", payload, err)
 	} else {
-		ReceivedEcho <- msgRX.Message
+		ReceivedEcho <- msgRX
 	}
 }
 
@@ -159,15 +184,22 @@ func onSearch(topic string, payload []byte) {
 	} else {
 		if msgRX.Message == "EMPTY CONVERSATION" {
 			log.Warnf("Could not find any lines containing that sentence for that client.")
-			SearchDone <- msgRX.Message
+			SearchDone <- msgRX
 		} else {
-			SearchDone <- PrintFilteredFile(msgRX.Message)
+			SearchDone <- msgRX
 		}
 	}
 }
 
 func echo(w http.ResponseWriter, r *http.Request) {
-	var echomsg string
+	var echomsg OutboxMsgStruct
+	cmdint, _ := strconv.Atoi(r.FormValue("cmd"))
+	ClientData := ClientStruct{
+		Client:           r.FormValue("client"),
+		Cmd:              cmdint,
+		SessID:           r.FormValue("sessid"),
+		EchoConversation: r.FormValue("echoconversation"),
+	}
 	w.Header().Set("Content-Type", "text/html")
 	if r.Method == http.MethodPost {
 		timestamp := time.Now().Format("02-Jan-2006 15:04:05")
@@ -181,7 +213,7 @@ func echo(w http.ResponseWriter, r *http.Request) {
 				},
 				"sessionID": &sqs.MessageAttributeValue{
 					DataType:    aws.String("String"),
-					StringValue: aws.String(sessID),
+					StringValue: aws.String(ClientData.SessID),
 				},
 				"timestamp": &sqs.MessageAttributeValue{
 					DataType:    aws.String("String"),
@@ -203,15 +235,19 @@ func echo(w http.ResponseWriter, r *http.Request) {
 		} else {
 			log.Infof("Message sent to SQS. MessageID: %v", *result.MessageId)
 			if text == "END" {
-				ClientData = *new(ClientStruct)
 				err := tpl.ExecuteTemplate(w, "menu.gohtml", nil)
 				if err != nil {
 					http.Error(w, err.Error(), http.StatusInternalServerError)
 				}
 				return
 			} else {
-				echomsg = <-ReceivedEcho
-				ClientData.EchoConversation = ClientData.EchoConversation + ClientData.Client + ":\t" + text + "\nEcho:\t" + echomsg + "\n\n"
+				for {
+					echomsg = <-ReceivedEcho
+					if echomsg.SessionID == ClientData.SessID {
+						ClientData.EchoConversation = ClientData.EchoConversation + echomsg.ClientName + ":\t" + text + "\nEcho:\t" + echomsg.Message + "\n\n"
+						break
+					}
+				}
 			}
 		}
 
@@ -224,6 +260,12 @@ func echo(w http.ResponseWriter, r *http.Request) {
 }
 
 func search(w http.ResponseWriter, r *http.Request) {
+	cmdint, _ := strconv.Atoi(r.FormValue("cmd"))
+	ClientData := ClientStruct{
+		Client: r.FormValue("client"),
+		Cmd:    cmdint,
+		SessID: r.FormValue("sessid"),
+	}
 	w.Header().Set("Content-Type", "text/html")
 	if r.Method == http.MethodPost {
 		ClientData.SearchData.ClientSearch = r.FormValue("clientsearch")
@@ -239,7 +281,7 @@ func search(w http.ResponseWriter, r *http.Request) {
 				},
 				"sessionID": &sqs.MessageAttributeValue{
 					DataType:    aws.String("String"),
-					StringValue: aws.String(sessID),
+					StringValue: aws.String(ClientData.SessID),
 				},
 				"timestamp": &sqs.MessageAttributeValue{
 					DataType:    aws.String("String"),
@@ -260,7 +302,14 @@ func search(w http.ResponseWriter, r *http.Request) {
 			log.Errorf("Could not send message to SQS queue: %v", err)
 		} else {
 			log.Infof("Message sent to SQS. MessageID: %v", *result.MessageId)
-			ClientData.SearchData.SearchResult = <-SearchDone
+
+			for {
+				searchmsg := <-SearchDone
+				if searchmsg.SessionID == ClientData.SessID {
+					ClientData.SearchData.SearchResult = PrintFilteredFile(searchmsg.Message)
+					break
+				}
+			}
 		}
 
 	}
@@ -272,6 +321,12 @@ func search(w http.ResponseWriter, r *http.Request) {
 }
 
 func download(w http.ResponseWriter, r *http.Request) {
+	cmdint, _ := strconv.Atoi(r.FormValue("cmd"))
+	ClientData := ClientStruct{
+		Client: r.FormValue("client"),
+		Cmd:    cmdint,
+		SessID: r.FormValue("sessid"),
+	}
 	w.Header().Set("Content-Type", "text/html")
 	if r.Method == http.MethodPost {
 		ClientData.DownloadUser = r.FormValue("downloaduser")

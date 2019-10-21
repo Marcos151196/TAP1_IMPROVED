@@ -41,11 +41,13 @@ var sess *session.Session = session.Must(session.NewSessionWithOptions(session.O
 }))
 var sqssvc *sqs.SQS = sqs.New(sess)
 
+var msgEchoed = make(chan bool, 1)
+var msgSearched = make(chan bool, 1)
+
 func main() {
-	initConfig() // Set config file, logs and queues URLs
-	/////////// MQTT INIT ////////////
-	mqttHelper.OpenMQTT(onConnect, onDisconnect)
-	sessID = StringWithCharset(6) // Generate random session ID
+	initConfig()                                 // Set config file, logs and queues URLs
+	mqttHelper.OpenMQTT(onConnect, onDisconnect) // Connect to MQTT broker with options specified in config.toml
+	sessID = StringWithCharset(6)                // Generate random session ID
 
 	// READ USERNAME FROM CONSOLE
 	fmt.Printf("Write your user name: ")
@@ -56,6 +58,7 @@ func main() {
 	}
 	clientName = strings.TrimSuffix(clientName, "\n")
 	log.Infof("USER: %s\tSESSION_ID: %s", clientName, sessID)
+	SubscribeAll(clientName)
 
 	// MAIN LOOP
 	for {
@@ -79,14 +82,9 @@ func main() {
 				break
 			}
 		}
-		SubscribeAll(clientName)
 
 		// MESSAGE SENDING LOOP
 		for {
-			if err != nil {
-				log.Errorf("Could not create all SNS topics: %v", err)
-				break
-			}
 			if command == 1 { // ECHO
 				fmt.Printf("Write the message you want to echo: ")
 				text, err := reader.ReadString('\n')
@@ -129,6 +127,9 @@ func main() {
 					log.Infof("Message sent to SQS. MessageID: %v", *result.MessageId)
 					if text == "END" {
 						break
+					} else {
+						<-msgEchoed
+						continue
 					}
 				}
 			} else if command == 2 { // SEARCH
@@ -178,6 +179,7 @@ func main() {
 					continue
 				} else {
 					log.Infof("Message sent to SQS. MessageID: %v", *result.MessageId)
+					<-msgSearched
 					break
 				}
 
@@ -229,7 +231,8 @@ func onEcho(topic string, payload []byte) {
 	if err != nil {
 		log.Errorf("Error parsing RX msg JSON from %s: %v", payload, err)
 	} else {
-		log.Infof("Echoed message: %s", msgRX.Message)
+		fmt.Printf("Echoed message: %s\n", msgRX.Message)
+		msgEchoed <- true
 	}
 }
 
@@ -241,6 +244,7 @@ func onSearch(topic string, payload []byte) {
 		log.Errorf("Error parsing RX msg JSON from %s: %v", payload, err)
 	} else {
 		PrintFilteredFile(msgRX.Message)
+		msgSearched <- true
 	}
 }
 

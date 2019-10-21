@@ -26,6 +26,7 @@ type OutboxMsgStruct struct {
 	Timestamp  string
 	Cmd        string
 	Message    string
+	SessionID  string
 }
 
 var logFile, verboseLevel, inboxURL, outboxURL string
@@ -160,6 +161,7 @@ func ProcessRXMessage(msg *sqs.Message) error {
 	cmd := *msg.MessageAttributes["cmd"].StringValue
 	clientName := *msg.MessageAttributes["clientName"].StringValue
 	timestamp := *msg.MessageAttributes["timestamp"].StringValue
+	sessid := *msg.MessageAttributes["sessionID"].StringValue
 	log.Infof("New message received. Client: %s\tCommand: %s", clientName, cmd)
 	cRX, _ := strconv.Atoi(cmd)
 	// SEARCH
@@ -188,6 +190,7 @@ func ProcessRXMessage(msg *sqs.Message) error {
 			Timestamp:  timestamp,
 			Cmd:        cmd,
 			Message:    filtFileStr,
+			SessionID:  sessid,
 		}
 		DeleteTemporalConversation(clientName + "_filtered")
 		log.Infof("Sending filtered conversation to %s", filtFileStr)
@@ -209,6 +212,11 @@ func ProcessRXMessage(msg *sqs.Message) error {
 			}
 		}
 	} else {
+		sqssvc.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
+			QueueUrl:          &inboxURL,
+			ReceiptHandle:     msg.ReceiptHandle,
+			VisibilityTimeout: aws.Int64(0),
+		})
 		return fmt.Errorf("This message was not for the search app.")
 	}
 	return nil

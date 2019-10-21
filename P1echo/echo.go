@@ -25,6 +25,7 @@ type OutboxMsgStruct struct {
 	Timestamp  string
 	Cmd        string
 	Message    string
+	SessionID  string
 }
 
 var logFile, verboseLevel, inboxURL, outboxURL string
@@ -153,6 +154,7 @@ func ProcessRXMessage(msg *sqs.Message) error {
 	sessID := *msg.MessageAttributes["sessionID"].StringValue
 	clientName := *msg.MessageAttributes["clientName"].StringValue
 	timestamp := *msg.MessageAttributes["timestamp"].StringValue
+	sessid := *msg.MessageAttributes["sessionID"].StringValue
 	log.Infof("New message received. Client: %s\tCommand: %s", clientName, cmd)
 	cRX, _ := strconv.Atoi(cmd)
 	if cRX == 1 {
@@ -166,6 +168,7 @@ func ProcessRXMessage(msg *sqs.Message) error {
 				Timestamp:  timestamp,
 				Cmd:        cmd,
 				Message:    text,
+				SessionID:  sessid,
 			}
 			err := StoreNewLine(clientName, sessID, text, timestamp)
 			if err != nil {
@@ -194,6 +197,11 @@ func ProcessRXMessage(msg *sqs.Message) error {
 
 		}
 	} else {
+		sqssvc.ChangeMessageVisibility(&sqs.ChangeMessageVisibilityInput{
+			QueueUrl:          &inboxURL,
+			ReceiptHandle:     msg.ReceiptHandle,
+			VisibilityTimeout: aws.Int64(0),
+		})
 		return fmt.Errorf("This message was not for the echo app.")
 	}
 	return nil

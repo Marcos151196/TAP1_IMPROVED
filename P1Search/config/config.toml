@@ -6,15 +6,15 @@
   conversationspath = "conversations"
 
 [mqtt]
-  broker = "tcp://3.8.78.60:1883"
+  broker = "tcp://3.10.14.1:1883"
   keepalive = 20
   password = ""
   timeout = 30
   username = ""
 
 [sqs]
-  inboxURL = "https://sqs.eu-west-2.amazonaws.com/049513327431/TA-inbox"
-  outboxURL = "https://sqs.eu-west-2.amazonaws.com/049513327431/TA-outbox"
+  inboxURL = "https://sqs.eu-west-2.amazonaws.com/049513327431/TAP1-Inbox"
+  outboxURL = "https://sqs.eu-west-2.amazonaws.com/049513327431/TAP1-Outbox"
 
 
 [log]
